@@ -1,0 +1,17 @@
+{
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/artifacts/**": true,
+    "**/cache/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/artifacts": true,
+    "**/cache": true
+  },
+  "files.exclude": {
+    "**/node_modules": true
+  },
+  "git.autofetch": false,
+  "extensions.ignoreRecommendations": true
+}
