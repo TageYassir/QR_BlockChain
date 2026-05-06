@@ -1,7 +1,6 @@
 import 'leaflet/dist/leaflet.css';
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import L from 'leaflet';
-import { useEffect } from 'react';
 
 // small fix for default icon in many setups
 delete L.Icon.Default.prototype._getIconUrl;

@@ -12,6 +12,7 @@ export default function ClaimPage() {
   const [location, setLocation] = useState(null);
   const [photos, setPhotos] = useState([]); // images + annotations
   const [status, setStatus] = useState('');
+  const [qrCode, setQrCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -89,19 +90,18 @@ export default function ClaimPage() {
       if (res.ok) {
         const body = await res.json();
         setStatus(`Success! Case ID: ${body.caseId}`);
+        setQrCode(body.qr || '');
         alert('Claim submitted successfully. Case ID: ' + body.caseId);
-        // redirect to history or show QR
-        setTimeout(() => {
-          window.location.href = '/claims/history';
-        }, 1500);
       } else {
         const errorText = await res.text();
         setStatus('Upload failed: ' + errorText);
+        setQrCode('');
         alert('Failed to submit claim: ' + errorText);
       }
     } catch (err) {
       console.error(err);
       setStatus('Error: ' + err.message);
+      setQrCode('');
       alert('Error: ' + err.message);
     } finally {
       setSubmitting(false);
@@ -177,6 +177,13 @@ export default function ClaimPage() {
       {status && (
         <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
           <strong>Status:</strong> {status}
+        </div>
+      )}
+
+      {qrCode && (
+        <div className="mt-4 p-4 bg-white border rounded-lg shadow-sm">
+          <div className="text-sm font-medium mb-2">Submitted QR</div>
+          <img src={qrCode} alt="Claim QR code" className="w-48 h-48 object-contain" />
         </div>
       )}
     </div>
