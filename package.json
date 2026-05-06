@@ -1,0 +1,28 @@
+{
+  "name": "qr-blockchain",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "npx hardhat test",
+    "hardhat": "npx hardhat"
+  },
+  "dependencies": {
+    "ethers": "^6.16.0",
+    "ipfs-http-client": "^60.0.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^7.0.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "hardhat": "^3.4.4",
+    "prettier": "^3.8.3",
+    "prettier-plugin-solidity": "^2.3.1",
+    "solhint": "^6.2.1",
+    "vite": "^8.0.10"
+  }
+}
