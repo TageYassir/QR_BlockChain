@@ -1,20 +1,40 @@
 from flask import Flask, jsonify, request
 from web3 import Web3
 import os
+import json
 from dotenv import load_dotenv
-
+import importlib.util
 load_dotenv()
 
-RPC_URL = os.environ.get('RPC_URL', 'http://127.0.0.1:8545')
-CONTRACT_ADDRESS = os.environ.get('CONTRACT_ADDRESS', '')
-PRIVATE_KEY = os.environ.get('PRIVATE_KEY', '')
+# Load backend/config.py as a module to avoid package import issues when running
+config_path = os.path.join(os.path.dirname(__file__), "config.py")
+spec = importlib.util.spec_from_file_location("backend.config", config_path)
+config_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(config_mod)
+Config = getattr(config_mod, "Config")
+
+app = Flask(__name__)
+app.config.from_object(Config)
+
+# create web3 provider from config
+RPC_URL = app.config.get('RPC_URL', 'http://127.0.0.1:8545')
+CONTRACT_ADDRESS = app.config.get('CONTRACT_ADDRESS', '')
+PRIVATE_KEY = app.config.get('PRIVATE_KEY', '')
 
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
 with open(os.path.join(os.path.dirname(__file__), 'Greeter.json')) as f:
-    abi = __import__('json').load(f)['abi']
+    abi = json.load(f)['abi']
 
-app = Flask(__name__)
+# Initialize Neo4j driver and register API blueprints if available
+try:
+    from backend.api.neo4j_driver.driver import init_neo4j
+    from backend.api.claim_api.route import claim_bp
+    init_neo4j(app)
+    app.register_blueprint(claim_bp)
+except Exception:
+    # If migration hasn't been applied or config missing, continue without API
+    pass
 
 def get_contract():
     if not CONTRACT_ADDRESS:
