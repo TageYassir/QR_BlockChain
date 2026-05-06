@@ -20,14 +20,19 @@ app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
   const lat = parseFloat(req.body.lat) || null;
   const lng = parseFloat(req.body.lng) || null;
   const comment = req.body.comment || '';
+  const reporter = req.body.reporter || 'anonymous';
+  const evidenceHash = req.body.evidenceHash || '';
+  const metadata = req.body.metadata ? JSON.parse(req.body.metadata) : {};
 
   try {
-    // Create Case node
+    // Create Case node with extended metadata
     const s = session();
     await s.writeTransaction(tx => tx.run(
       `MERGE (c:Case {caseId: $caseId})
-       SET c.category=$category, c.comment=$comment, c.createdAt=datetime()
-       RETURN c`, { caseId, category, comment }
+       SET c.category=$category, c.comment=$comment, c.reporter=$reporter, 
+           c.evidenceHash=$evidenceHash, c.metadata=$metadata, c.createdAt=datetime()
+       RETURN c`, 
+      { caseId, category, comment, reporter, evidenceHash, metadata: JSON.stringify(metadata) }
     ));
 
     // save photos and create Photo nodes
@@ -43,11 +48,15 @@ app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
       const metaKey = `meta[${i}]`;
       const meta = req.body[metaKey] ? JSON.parse(req.body[metaKey]) : {};
 
+      // Extract hash from clientHashes array if available
+      const clientHash = metadata.clientHashes && metadata.clientHashes[i] ? metadata.clientHashes[i].hash : '';
+
       await s.writeTransaction(tx => tx.run(
         `MATCH (c:Case {caseId: $caseId})
-         CREATE (p:Photo {id: $id, url: $url, filename:$filename, meta:$meta})
+         CREATE (p:Photo {id: $id, url: $url, filename:$filename, meta:$meta, fileHash:$fileHash})
          CREATE (c)-[:HAS_PHOTO]->(p)
-         RETURN p`, { caseId, id: uuidv4(), url, filename, meta: JSON.stringify(meta) }
+         RETURN p`, 
+        { caseId, id: uuidv4(), url, filename, meta: JSON.stringify(meta), fileHash: clientHash }
       ));
     }
 

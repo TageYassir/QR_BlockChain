@@ -13,8 +13,10 @@
   "dependencies": {
     "ethers": "^6.16.0",
     "ipfs-http-client": "^60.0.1",
+    "leaflet": "^1.9.4",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "react-leaflet": "^5.0.0"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^7.0.0",

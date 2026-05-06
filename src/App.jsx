@@ -1,5 +1,5 @@
 import React from 'react'
-import ClaimPage from './claim_page/page.jsx'
+import ClaimPage from './claim/page.jsx'
 
 export default function App() {
   return (
