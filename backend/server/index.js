@@ -13,11 +13,10 @@ const uploadsDir = path.join(__dirname, 'uploads');
 const storageDir = path.join(__dirname, 'storage');
 const upload = multer({ dest: uploadsDir });
 
-// ensure storage folder exists
 ensureStorage(uploadsDir);
 ensureStorage(storageDir);
 
-// allow simple CORS for dev (adjust for production)
+// simple CORS for dev
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', req.get('origin') || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -31,15 +30,8 @@ function normalizeAddress(value = '') {
 }
 
 function parseJsonField(value, fallback = {}) {
-  if (!value) {
-    return fallback;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    throw new Error(`Invalid JSON payload: ${error.message}`);
-  }
+  if (!value) return fallback;
+  try { return JSON.parse(value); } catch (e) { throw new Error(`Invalid JSON payload: ${e.message}`); }
 }
 
 function serializeCaseRecord(record) {
@@ -47,8 +39,6 @@ function serializeCaseRecord(record) {
   const createdAt = record.createdAt && typeof record.createdAt.toString === 'function'
     ? record.createdAt.toString()
     : record.createdAt || null;
-  const location = record.location || null;
-
   return {
     caseId: record.caseId,
     policyId: record.policyId || metadata.policyId || '',
@@ -56,6 +46,7 @@ function serializeCaseRecord(record) {
     status: record.status || 'pending',
     comment: record.comment || '',
     reporter: record.reporter || '',
+    acceptorAddress: record.acceptorAddress || metadata.acceptorAddress || '',
     evidenceHash: record.evidenceHash || '',
     qrData: record.qrData || '',
     qr: record.qr || '',
@@ -64,10 +55,11 @@ function serializeCaseRecord(record) {
     evidences: record.evidences || [],
     evidenceCount: record.evidenceCount || (Array.isArray(record.evidences) ? record.evidences.length : 0),
     createdAt,
-    location,
+    location: record.location || null,
   };
 }
 
+// Create claim
 app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
   const caseId = req.body.caseId || uuidv4();
   const policyId = req.body.policyId || '';
@@ -77,27 +69,24 @@ app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
   const lat = Number.isNaN(parsedLat) ? null : parsedLat;
   const lng = Number.isNaN(parsedLng) ? null : parsedLng;
   const comment = req.body.comment || '';
-  const reporter = req.body.reporter || 'anonymous';
   const actorAddress = req.get('x-user-address') || '';
+  const acceptorAddress = req.body.acceptorAddress || '';
   const evidenceHash = req.body.evidenceHash || '';
-  let metadata;
+  let metadata = {};
 
-  if (!normalizeAddress(actorAddress)) {
-    return res.status(401).json({ ok: false, error: 'Wallet connection required' });
-  }
-
-  if (normalizeAddress(actorAddress) !== normalizeAddress(reporter)) {
-    return res.status(403).json({ ok: false, error: 'Reporter must match connected wallet' });
-  }
+  if (!normalizeAddress(actorAddress)) return res.status(401).json({ ok: false, error: 'Wallet connection required' });
 
   try {
     metadata = parseJsonField(req.body.metadata, {});
-  } catch (error) {
-    return res.status(400).json({ ok: false, error: error.message });
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: err.message });
   }
 
+  if (!normalizeAddress(acceptorAddress)) return res.status(400).json({ ok: false, error: 'Acceptor wallet address is required' });
+  if (!/^0x[a-f0-9]{40}$/.test(String(acceptorAddress).trim().toLowerCase())) return res.status(400).json({ ok: false, error: 'Acceptor wallet address is invalid' });
+
+  // persist in Neo4j
   try {
-    // Create Case node with extended metadata
     const s = session();
     try {
       await s.writeTransaction(tx => tx.run(
@@ -106,30 +95,26 @@ app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
              c.category=$category,
              c.comment=$comment,
              c.reporter=$reporter,
+             c.acceptorAddress=$acceptorAddress,
              c.evidenceHash=$evidenceHash,
-           c.status='pending',
+             c.status='pending',
              c.metadata=$metadata,
              c.createdAt=coalesce(c.createdAt, datetime())
          RETURN c`,
-        { caseId, policyId, category, comment, reporter, evidenceHash, metadata: JSON.stringify(metadata) }
+        { caseId, policyId, category, comment, reporter: normalizeAddress(actorAddress), acceptorAddress: normalizeAddress(acceptorAddress), evidenceHash, metadata: JSON.stringify(metadata) }
       ));
 
-      // save photos and create Photo nodes
+      // handle uploaded photos
       const files = req.files || [];
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
         const filename = `${Date.now()}-${f.originalname}`;
         const dest = path.join(storageDir, filename);
-        fs.renameSync(f.path, dest); // move to storage
-        const url = `/storage/${filename}`; // serve statically or upload to S3
-
-        // parse meta if present
+        fs.renameSync(f.path, dest);
+        const url = `/storage/${filename}`;
         const metaKey = `meta[${i}]`;
         const meta = parseJsonField(req.body[metaKey], {});
-
-        // Extract hash from clientHashes array if available
         const clientHash = metadata.clientHashes && metadata.clientHashes[i] ? metadata.clientHashes[i].hash : '';
-
         await s.writeTransaction(tx => tx.run(
           `MATCH (c:Case {caseId: $caseId})
            CREATE (p:Photo {id: $id, url: $url, filename:$filename, meta:$meta, fileHash:$fileHash})
@@ -139,7 +124,6 @@ app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
         ));
       }
 
-      // attach geolocation as a node (optional)
       if (lat !== null && lng !== null) {
         await s.writeTransaction(tx => tx.run(
           `MATCH (c:Case {caseId: $caseId})
@@ -148,67 +132,30 @@ app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
         ));
       }
 
-      // generate QR containing case link or id
       const origin = req.get('origin') || `${req.protocol}://${req.get('host')}` || 'http://localhost:5173';
       const qrData = `${origin}/?evidence=${caseId}`;
       const qr = await QRCode.toDataURL(qrData);
 
       await s.writeTransaction(tx => tx.run(
         `MATCH (c:Case {caseId: $caseId})
-         SET c.qrData = $qrData,
-             c.qr = $qr,
-             c.updatedAt = datetime()
-         RETURN c`,
-        { caseId, qrData, qr }
+         SET c.qrData = $qrData, c.qr = $qr, c.updatedAt = datetime()
+         RETURN c`, { caseId, qrData, qr }
       ));
 
-      // persist a simple JSON record for fallback / debugging
-      try {
-        const claimsFile = path.join(storageDir, 'claims.json');
-        let existing = [];
-        if (fs.existsSync(claimsFile)) {
-          const raw = fs.readFileSync(claimsFile, 'utf8');
-          try { existing = JSON.parse(raw) || []; } catch (e) { existing = []; }
-        }
-
-        const claimRecord = {
-          caseId,
-          policyId,
-          category,
-          comment,
-          reporter,
-          evidenceHash,
-          status: 'pending',
-          metadata,
-          qrData,
-          qr,
-          photos: (req.files || []).map((f, i) => ({ filename: `${Date.now()}-${f.originalname}`, index: i })),
-          createdAt: new Date().toISOString(),
-          location: lat !== null && lng !== null ? { lat, lng } : null,
-          evidences: [],
-        };
-
-        existing.push(claimRecord);
-        fs.writeFileSync(claimsFile, JSON.stringify(existing, null, 2), 'utf8');
-      } catch (persistErr) {
-        console.warn('Failed to persist local claim record:', persistErr.message);
-      }
-
-      res.json({ ok: true, caseId, policyId, qr, qrData });
-    } finally {
-      await s.close();
-    }
+      return res.json({ ok: true, caseId, policyId, qr, qrData });
+    } finally { await s.close(); }
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
+    console.error('Neo4j error when creating claim:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
   }
 });
 
+// Add evidence
 app.post('/api/claims/:id/evidence', upload.array('photos', 20), async (req, res) => {
   const claimId = req.params.id;
   const actorAddress = req.get('x-user-address') || '';
-  const reporter = req.body.reporter || '';
   const comment = req.body.comment || '';
+  const linkedEvidenceId = req.body.linkedEvidenceId || '';
   const parsedLat = parseFloat(req.body.lat);
   const parsedLng = parseFloat(req.body.lng);
   const lat = Number.isNaN(parsedLat) ? null : parsedLat;
@@ -216,17 +163,8 @@ app.post('/api/claims/:id/evidence', upload.array('photos', 20), async (req, res
   const evidenceId = uuidv4();
   const files = req.files || [];
 
-  if (!normalizeAddress(actorAddress)) {
-    return res.status(401).json({ ok: false, error: 'Wallet connection required' });
-  }
-
-  if (normalizeAddress(actorAddress) !== normalizeAddress(reporter)) {
-    return res.status(403).json({ ok: false, error: 'Reporter must match connected wallet' });
-  }
-
-  if (!files.length) {
-    return res.status(400).json({ ok: false, error: 'At least one evidence photo is required' });
-  }
+  if (!normalizeAddress(actorAddress)) return res.status(401).json({ ok: false, error: 'Wallet connection required' });
+  if (!files.length && !String(comment || '').trim()) return res.status(400).json({ ok: false, error: 'Add a comment or at least one evidence photo' });
 
   const savedPhotos = [];
   for (let i = 0; i < files.length; i++) {
@@ -240,166 +178,89 @@ app.post('/api/claims/:id/evidence', upload.array('photos', 20), async (req, res
   try {
     const s = session();
     try {
-      const ownerResult = await s.readTransaction((tx) => tx.run(
-        `MATCH (c:Case {caseId: $claimId}) RETURN c.reporter AS reporter LIMIT 1`,
-        { claimId }
-      ));
-
-      if (!ownerResult.records.length) {
-        return res.status(404).json({ ok: false, error: 'Claim not found' });
-      }
-
-      const claimReporter = ownerResult.records[0].get('reporter') || '';
-      if (normalizeAddress(claimReporter) !== normalizeAddress(actorAddress)) {
-        return res.status(403).json({ ok: false, error: 'Only claim owner can add evidence' });
-      }
-
-      await s.writeTransaction((tx) => tx.run(
+      const ownerResult = await s.readTransaction(tx => tx.run(
         `MATCH (c:Case {caseId: $claimId})
-         CREATE (e:Evidence {
-           evidenceId: $evidenceId,
-           submittedBy: $submittedBy,
-           comment: $comment,
-           status: 'accepted',
-           photos: $photos,
-           lat: $lat,
-           lng: $lng,
-           createdAt: datetime()
-         })
-         CREATE (c)-[:HAS_EVIDENCE]->(e)
-         SET c.status = 'accepted',
-             c.updatedAt = datetime()
-         RETURN e`,
-        {
-          claimId,
-          evidenceId,
-          submittedBy: actorAddress,
-          comment,
-          photos: savedPhotos,
-          lat,
-          lng,
-        }
+         OPTIONAL MATCH (c)-[:HAS_EVIDENCE]->(prev:Evidence {evidenceId: $linkedEvidenceId})
+         RETURN c.reporter AS reporter, c.acceptorAddress AS acceptorAddress, prev.evidenceId AS prevEvidenceId LIMIT 1`,
+        { claimId, linkedEvidenceId }
       ));
 
+      if (!ownerResult.records.length) return res.status(404).json({ ok: false, error: 'Claim not found' });
+
+      const acceptorAddress = ownerResult.records[0].get('acceptorAddress') || '';
+      const claimReporter = ownerResult.records[0].get('reporter') || '';
+      const prevEvidenceId = ownerResult.records[0].get('prevEvidenceId') || '';
+
+      if (!normalizeAddress(acceptorAddress)) return res.status(403).json({ ok: false, error: 'This claim has no acceptor configured' });
+      if (normalizeAddress(acceptorAddress) !== normalizeAddress(actorAddress)) return res.status(403).json({ ok: false, error: 'Only the configured acceptor wallet can add decision evidence' });
+      if (normalizeAddress(acceptorAddress) === normalizeAddress(claimReporter)) return res.status(403).json({ ok: false, error: 'Acceptor wallet cannot be the original claim reporter' });
+      if (linkedEvidenceId && !prevEvidenceId) return res.status(404).json({ ok: false, error: 'Linked evidence not found on this claim' });
+
+      await s.writeTransaction(tx => tx.run(
+        `MATCH (c:Case {caseId: $claimId})
+         CREATE (e:Evidence { evidenceId: $evidenceId, submittedBy: $submittedBy, comment: $comment, status: 'accepted', photos: $photos, lat: $lat, lng: $lng, linkedEvidenceId: $linkedEvidenceId, createdAt: datetime() })
+         CREATE (c)-[:HAS_EVIDENCE]->(e)
+         WITH c, e
+         OPTIONAL MATCH (c)-[:HAS_EVIDENCE]->(prev:Evidence {evidenceId: $linkedEvidenceId})
+         FOREACH (_ IN CASE WHEN prev IS NULL OR $linkedEvidenceId = '' THEN [] ELSE [1] END | CREATE (e)-[:LINKED_TO]->(prev))
+         SET c.status = 'accepted', c.updatedAt = datetime()
+         RETURN e`,
+        { claimId, evidenceId, submittedBy: normalizeAddress(actorAddress), comment, photos: savedPhotos, lat, lng, linkedEvidenceId }
+      ));
+
+      // generate QR for evidence
+      try {
+        const origin = req.get('origin') || `${req.protocol}://${req.get('host')}` || 'http://localhost:5173';
+        const qrData = `${origin}/?evidence=${evidenceId}&claim=${claimId}`;
+        const qr = await QRCode.toDataURL(qrData);
+        await s.writeTransaction(tx => tx.run(
+          `MATCH (e:Evidence {evidenceId: $evidenceId}) SET e.qrData = $qrData, e.qr = $qr RETURN e`, { evidenceId, qrData, qr }
+        ));
+      } catch (qrErr) {
+        console.warn('Failed to generate evidence QR:', qrErr && qrErr.message ? qrErr.message : qrErr);
+      }
+
       return res.json({ ok: true, claimId, evidenceId, status: 'accepted' });
-    } finally {
-      await s.close();
-    }
+    } finally { await s.close(); }
   } catch (err) {
-    // Fallback to local file when Neo4j is unavailable
-    try {
-      const claimsFile = path.join(storageDir, 'claims.json');
-      if (!fs.existsSync(claimsFile)) {
-        return res.status(404).json({ ok: false, error: 'Claim store not found' });
-      }
-
-      const raw = fs.readFileSync(claimsFile, 'utf8');
-      const parsed = JSON.parse(raw || '[]');
-      const claim = parsed.find((c) => c.caseId === claimId || c.caseId === decodeURIComponent(claimId));
-      if (!claim) {
-        return res.status(404).json({ ok: false, error: 'Claim not found' });
-      }
-
-      if (normalizeAddress(claim.reporter || '') !== normalizeAddress(actorAddress)) {
-        return res.status(403).json({ ok: false, error: 'Only claim owner can add evidence' });
-      }
-
-      if (!Array.isArray(claim.evidences)) claim.evidences = [];
-      claim.evidences.push({
-        evidenceId,
-        submittedBy: actorAddress,
-        comment,
-        photos: savedPhotos,
-        location: lat !== null && lng !== null ? { lat, lng } : null,
-        status: 'accepted',
-        createdAt: new Date().toISOString(),
-      });
-      claim.status = 'accepted';
-
-      fs.writeFileSync(claimsFile, JSON.stringify(parsed, null, 2), 'utf8');
-      return res.json({ ok: true, claimId, evidenceId, status: 'accepted' });
-    } catch (fallbackErr) {
-      return res.status(500).json({ ok: false, error: 'Database unavailable' });
-    }
+    console.error('Neo4j error when creating evidence:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
   }
 });
 
-// List claims (from local storage fallback)
+// List claims
 app.get('/api/claims', async (req, res) => {
+  // enforce connected wallet and scope claims to that wallet
+  const actorAddress = req.get('x-user-address') || req.query.reporter || '';
+  if (!normalizeAddress(actorAddress)) return res.status(401).json({ ok: false, error: 'Wallet connection required' });
+  const reporterFilter = normalizeAddress(actorAddress);
   try {
     const s = session();
     try {
-      const reporterFilter = req.query.reporter || '';
       const result = await s.readTransaction(tx => tx.run(
         `MATCH (c:Case)
          OPTIONAL MATCH (c)-[:HAS_PHOTO]->(p:Photo)
          OPTIONAL MATCH (c)-[:AT_LOCATION]->(loc:Location)
          OPTIONAL MATCH (c)-[:HAS_EVIDENCE]->(e:Evidence)
-         WHERE $reporterFilter = '' OR c.reporter = $reporterFilter
-         WITH c,
-              collect(DISTINCT p.url) AS photos,
-              head(collect(DISTINCT loc)) AS location,
-              count(DISTINCT e) AS evidenceCount
-         RETURN c.caseId AS caseId,
-                c.policyId AS policyId,
-                c.category AS category,
-              c.status AS status,
-                c.comment AS comment,
-                c.reporter AS reporter,
-                c.evidenceHash AS evidenceHash,
-                c.qrData AS qrData,
-                c.qr AS qr,
-                c.metadata AS metadata,
-                location.lat AS lat,
-                location.lng AS lng,
-                evidenceCount AS evidenceCount,
-                photos AS photos,
-                c.createdAt AS createdAt
-         ORDER BY createdAt DESC`,
+         WHERE $reporterFilter = '' OR toLower(c.reporter) = toLower($reporterFilter)
+         WITH c, collect(DISTINCT p.url) AS photos, head(collect(DISTINCT loc)) AS location, collect(DISTINCT e { .evidenceId, .submittedBy, .comment, .status, .photos, .lat, .lng, .linkedEvidenceId, .qrData, .qr, createdAt: toString(e.createdAt) }) AS evidences, count(DISTINCT e) AS evidenceCount
+         RETURN c.caseId AS caseId, c.policyId AS policyId, c.category AS category, c.status AS status, c.comment AS comment, c.reporter AS reporter, c.acceptorAddress AS acceptorAddress, c.evidenceHash AS evidenceHash, c.qrData AS qrData, c.qr AS qr, c.metadata AS metadata, location.lat AS lat, location.lng AS lng, evidenceCount AS evidenceCount, photos AS photos, evidences AS evidences, c.createdAt AS createdAt ORDER BY createdAt DESC`,
         { reporterFilter }
       ));
+
       const claims = result.records.map(r => serializeCaseRecord({
-        caseId: r.get('caseId'),
-        policyId: r.get('policyId'),
-        category: r.get('category'),
-        status: r.get('status') || 'pending',
-        comment: r.get('comment'),
-        reporter: r.get('reporter'),
-        evidenceHash: r.get('evidenceHash'),
-        qrData: r.get('qrData'),
-        qr: r.get('qr'),
-        metadata: r.get('metadata'),
-        evidenceCount: Number(r.get('evidenceCount') || 0),
-        location: r.get('lat') !== null && r.get('lng') !== null ? { lat: r.get('lat'), lng: r.get('lng') } : null,
-        photos: r.get('photos') || [],
-        createdAt: r.get('createdAt')
+        caseId: r.get('caseId'), policyId: r.get('policyId'), category: r.get('category'), status: r.get('status') || 'pending', comment: r.get('comment'), reporter: r.get('reporter'), acceptorAddress: r.get('acceptorAddress'), evidenceHash: r.get('evidenceHash'), qrData: r.get('qrData'), qr: r.get('qr'), metadata: r.get('metadata'), evidenceCount: Number(r.get('evidenceCount') || 0), evidences: r.get('evidences') || [], location: r.get('lat') !== null && r.get('lng') !== null ? { lat: r.get('lat'), lng: r.get('lng') } : null, photos: r.get('photos') || [], createdAt: r.get('createdAt')
       }));
+
       return res.json({ ok: true, claims });
     } finally { await s.close(); }
   } catch (err) {
-    // Neo4j is unavailable; use fallback to local file
-    try {
-      const claimsFile = path.join(storageDir, 'claims.json');
-      if (fs.existsSync(claimsFile)) {
-        const raw = fs.readFileSync(claimsFile, 'utf8');
-        const parsed = JSON.parse(raw || '[]');
-        const claims = parsed.reverse().map((item) => ({
-          ...item,
-          status: item.status || 'pending',
-          evidences: Array.isArray(item.evidences) ? item.evidences : [],
-          evidenceCount: Array.isArray(item.evidences) ? item.evidences.length : 0,
-        }));
-        return res.json({ ok: true, claims });
-      }
-    } catch (fallbackErr) {
-      // fallback also failed
-    }
-
-    res.status(500).json({ ok: false, error: 'Database unavailable' });
+    console.error('Neo4j error when listing claims:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
   }
 });
 
-// Get single claim by id
+// Get single claim
 app.get('/api/claims/:id', async (req, res) => {
   const id = req.params.id;
   try {
@@ -410,82 +271,67 @@ app.get('/api/claims/:id', async (req, res) => {
          OPTIONAL MATCH (c)-[:HAS_PHOTO]->(p:Photo)
          OPTIONAL MATCH (c)-[:AT_LOCATION]->(loc:Location)
          OPTIONAL MATCH (c)-[:HAS_EVIDENCE]->(e:Evidence)
-         WITH c,
-              collect(DISTINCT p.url) AS photos,
-              head(collect(DISTINCT loc)) AS location,
-              collect(DISTINCT e {
-                .evidenceId,
-                .submittedBy,
-                .comment,
-                .status,
-                .photos,
-                .lat,
-                .lng,
-                createdAt: toString(e.createdAt)
-              }) AS evidences
-         RETURN c.caseId AS caseId,
-                c.policyId AS policyId,
-                c.category AS category,
-              c.status AS status,
-                c.comment AS comment,
-                c.reporter AS reporter,
-                c.evidenceHash AS evidenceHash,
-                c.qrData AS qrData,
-                c.qr AS qr,
-                c.metadata AS metadata,
-                location.lat AS lat,
-                location.lng AS lng,
-                evidences AS evidences,
-                photos AS photos,
-                c.createdAt AS createdAt`, { id }
+         WITH c, collect(DISTINCT p.url) AS photos, head(collect(DISTINCT loc)) AS location, collect(DISTINCT e { .evidenceId, .submittedBy, .comment, .status, .photos, .lat, .lng, .linkedEvidenceId, .qrData, .qr, createdAt: toString(e.createdAt) }) AS evidences
+         RETURN c.caseId AS caseId, c.policyId AS policyId, c.category AS category, c.status AS status, c.comment AS comment, c.reporter AS reporter, c.acceptorAddress AS acceptorAddress, c.evidenceHash AS evidenceHash, c.qrData AS qrData, c.qr AS qr, c.metadata AS metadata, location.lat AS lat, location.lng AS lng, evidences AS evidences, photos AS photos, c.createdAt AS createdAt`,
+        { id }
       ));
+
       if (result.records.length === 0) return res.status(404).json({ ok: false, error: 'Not found' });
       const rec = result.records[0];
-      return res.json({ ok: true, claim: serializeCaseRecord({
-        caseId: rec.get('caseId'),
-        policyId: rec.get('policyId'),
-        category: rec.get('category'),
-        status: rec.get('status') || 'pending',
-        comment: rec.get('comment'),
-        reporter: rec.get('reporter'),
-        evidenceHash: rec.get('evidenceHash'),
-        qrData: rec.get('qrData'),
-        qr: rec.get('qr'),
-        metadata: rec.get('metadata'),
-        location: rec.get('lat') !== null && rec.get('lng') !== null ? { lat: rec.get('lat'), lng: rec.get('lng') } : null,
-        evidences: (rec.get('evidences') || []).filter((e) => e && e.evidenceId),
-        photos: rec.get('photos') || [],
-        createdAt: rec.get('createdAt')
-      }) });
+      return res.json({ ok: true, claim: serializeCaseRecord({ caseId: rec.get('caseId'), policyId: rec.get('policyId'), category: rec.get('category'), status: rec.get('status') || 'pending', comment: rec.get('comment'), reporter: rec.get('reporter'), acceptorAddress: rec.get('acceptorAddress'), evidenceHash: rec.get('evidenceHash'), qrData: rec.get('qrData'), qr: rec.get('qr'), metadata: rec.get('metadata'), location: rec.get('lat') !== null && rec.get('lng') !== null ? { lat: rec.get('lat'), lng: rec.get('lng') } : null, evidences: (rec.get('evidences') || []).filter((e) => e && e.evidenceId), photos: rec.get('photos') || [], createdAt: rec.get('createdAt') }) });
     } finally { await s.close(); }
   } catch (err) {
-    // Neo4j is unavailable; use fallback to local file
-    try {
-      const claimsFile = path.join(storageDir, 'claims.json');
-      if (fs.existsSync(claimsFile)) {
-        const raw = fs.readFileSync(claimsFile, 'utf8');
-        const parsed = JSON.parse(raw || '[]');
-        const found = parsed.find(c => c.caseId === id || c.caseId === decodeURIComponent(id));
-        if (found) {
-          return res.json({
-            ok: true,
-            claim: {
-              ...found,
-              status: found.status || 'pending',
-              evidences: Array.isArray(found.evidences) ? found.evidences : [],
-            },
-          });
-        }
-      }
-    } catch (fallbackErr) {
-      // fallback also failed
-    }
-
-    res.status(500).json({ ok: false, error: 'Database unavailable' });
+    console.error('Neo4j error when getting claim:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
   }
 });
 
-// Global ledger view of public claim records
+// List evidences submitted by a wallet
+app.get('/api/evidences', async (req, res) => {
+  const actorAddress = req.get('x-user-address') || req.query.submittedBy || '';
+  if (!normalizeAddress(actorAddress)) return res.status(401).json({ ok: false, error: 'Wallet connection required' });
+  try {
+    const s = session();
+    try {
+      const result = await s.readTransaction(tx => tx.run(
+        `MATCH (c:Case)-[:HAS_EVIDENCE]->(e:Evidence)
+         WHERE toLower(e.submittedBy) = toLower($submittedBy)
+         RETURN c.caseId AS caseId,
+                e.evidenceId AS evidenceId,
+                e.comment AS comment,
+                e.photos AS photos,
+                e.lat AS lat,
+                e.lng AS lng,
+                e.linkedEvidenceId AS linkedEvidenceId,
+                e.qr AS qr,
+                e.qrData AS qrData,
+                toString(e.createdAt) AS createdAt
+         ORDER BY createdAt DESC`,
+        { submittedBy: normalizeAddress(actorAddress) }
+      ));
+
+      const evidences = result.records.map(r => ({
+        evidenceId: r.get('evidenceId'),
+        claimId: r.get('caseId'),
+        comment: r.get('comment') || '',
+        photos: r.get('photos') || [],
+        lat: r.get('lat') || null,
+        lng: r.get('lng') || null,
+        linkedEvidenceId: r.get('linkedEvidenceId') || '',
+        qr: r.get('qr') || '',
+        qrData: r.get('qrData') || '',
+        createdAt: r.get('createdAt') || ''
+      }));
+
+      return res.json({ ok: true, evidences });
+    } finally { await s.close(); }
+  } catch (err) {
+    console.error('Neo4j error when listing evidences:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
+  }
+});
+
+// Global ledger
 app.get('/api/ledger', async (req, res) => {
   try {
     const s = session();
@@ -494,53 +340,19 @@ app.get('/api/ledger', async (req, res) => {
         `MATCH (c:Case)
          OPTIONAL MATCH (c)-[:HAS_PHOTO]->(p:Photo)
          WITH c, collect(DISTINCT p.url) AS photos
-         RETURN c.caseId AS caseId,
-                c.policyId AS policyId,
-                c.evidenceHash AS txHash,
-                c.createdAt AS createdAt,
-                photos AS photos
-         ORDER BY createdAt DESC`
+         RETURN c.caseId AS caseId, c.policyId AS policyId, c.evidenceHash AS txHash, c.createdAt AS createdAt, photos AS photos ORDER BY createdAt DESC`
       ));
 
-      const ledger = result.records.map((record) => ({
-        txHash: record.get('txHash') || record.get('caseId'),
-        caseId: record.get('caseId'),
-        timestamp: record.get('createdAt') && typeof record.get('createdAt').toString === 'function'
-          ? record.get('createdAt').toString()
-          : record.get('createdAt') || '',
-        policyId: record.get('policyId') || '',
-        photos: record.get('photos') || [],
-      }));
-
+      const ledger = result.records.map((record) => ({ txHash: record.get('txHash') || record.get('caseId'), caseId: record.get('caseId'), timestamp: record.get('createdAt') && typeof record.get('createdAt').toString === 'function' ? record.get('createdAt').toString() : record.get('createdAt') || '', policyId: record.get('policyId') || '', photos: record.get('photos') || [] }));
       return res.json({ ok: true, ledger });
-    } finally {
-      await s.close();
-    }
+    } finally { await s.close(); }
   } catch (err) {
-    // Neo4j is unavailable; use fallback to local file
-    try {
-      const claimsFile = path.join(storageDir, 'claims.json');
-      if (fs.existsSync(claimsFile)) {
-        const raw = fs.readFileSync(claimsFile, 'utf8');
-        const parsed = JSON.parse(raw || '[]');
-        const ledger = parsed.map((item) => ({
-          txHash: item.evidenceHash || item.caseId,
-          caseId: item.caseId,
-          timestamp: item.createdAt || '',
-          policyId: item.policyId || '',
-          photos: item.photos || [],
-        }));
-        return res.json({ ok: true, ledger });
-      }
-    } catch (fallbackErr) {
-      // fallback also failed
-    }
-
-    res.status(500).json({ ok: false, error: 'Database unavailable' });
+    console.error('Neo4j error when fetching ledger:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
   }
 });
 
-// Serve storage folder static (for demo)
+// Serve storage folder static
 app.use('/storage', express.static(storageDir));
 
 app.listen(process.env.PORT || 4001, () => console.log(`Server started on port ${process.env.PORT || 4001}`));

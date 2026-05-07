@@ -8,6 +8,7 @@ export default function ClaimPage({ userAddress, onNavigate }) {
   const [category, setCategory] = useState('vehicle');
   const [policyId, setPolicyId] = useState('');
   const [reporter, setReporter] = useState(userAddress || '');
+  const [acceptorAddress, setAcceptorAddress] = useState('');
   const [comment, setComment] = useState('');
   const [location, setLocation] = useState(null);
   const [photos, setPhotos] = useState([]); // Array of { file, type: 'paper' | 'id', preview, pins }
@@ -40,6 +41,14 @@ export default function ClaimPage({ userAddress, onNavigate }) {
       alert('Please upload at least one photo');
       return;
     }
+    if (!acceptorAddress.trim()) {
+      alert('Please provide the wallet address of the person who will accept the claim');
+      return;
+    }
+    if (!ethers.isAddress(acceptorAddress.trim())) {
+      alert('Please enter a valid wallet address for the claim acceptor');
+      return;
+    }
     // Confirmation for number of photos as requested
     if (!window.confirm(`Are you sure? You are submitting exactly ${photos.length} photo(s).`)) return;
 
@@ -55,7 +64,7 @@ export default function ClaimPage({ userAddress, onNavigate }) {
       }
 
       const concat = ethers.concat(clientHashes.map(c => c.hash));
-      const metaObj = { policyId, reporter, location, category, comment };
+      const metaObj = { policyId, reporter, acceptorAddress, location, category, comment };
       const metaBytes = ethers.toUtf8Bytes(JSON.stringify(metaObj));
       const evidenceHash = ethers.keccak256(ethers.concat([concat, metaBytes]));
 
@@ -64,6 +73,7 @@ export default function ClaimPage({ userAddress, onNavigate }) {
       fd.append('category', category);
       fd.append('policyId', policyId);
       fd.append('comment', comment);
+      fd.append('acceptorAddress', acceptorAddress.trim());
       if (location) {
         fd.append('lat', location[0]);
         fd.append('lng', location[1]);
@@ -74,6 +84,7 @@ export default function ClaimPage({ userAddress, onNavigate }) {
         clientHashes,
         policyId,
         reporter,
+        acceptorAddress,
         evidenceHash,
         perImageMeta: photos.map(p => ({ pins: p.pins || [], type: p.type || 'unknown' }))
       }));
@@ -161,6 +172,19 @@ export default function ClaimPage({ userAddress, onNavigate }) {
         </div>
 
         <div>
+          <label className="block text-sm font-semibold text-gray-700 mb-1">Claim Accepting Wallet Address</label>
+          <input
+            value={acceptorAddress}
+            onChange={(e) => setAcceptorAddress(e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none"
+            placeholder="0x..."
+          />
+          <p className="mt-2 text-xs text-gray-500">
+            This wallet will be the only one allowed to open the QR and submit the decision evidence.
+          </p>
+        </div>
+
+        <div>
           <label className="block text-sm font-semibold text-gray-700 mb-1">Evidence Photos (Papers & IDs)</label>
           <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-4">
              {/* Note: Assuming ImageUploader is adapted or standard for this */}
@@ -221,6 +245,9 @@ export default function ClaimPage({ userAddress, onNavigate }) {
         <div className="mt-6 p-6 bg-gray-50 border border-gray-200 rounded-xl shadow-inner text-center">
           <div className="text-lg font-bold text-gray-800 mb-4">Your Case QR Code</div>
           <img src={qrCode} alt="Claim QR code" className="w-48 h-48 mx-auto object-contain border border-gray-300 bg-white p-2 rounded-lg shadow-sm" />
+          <p className="mt-3 text-sm text-gray-600">
+            Share this QR only with the acceptor wallet: <span className="font-mono text-gray-800 break-all">{acceptorAddress}</span>
+          </p>
           <button
             type="button"
             onClick={downloadQrImage}

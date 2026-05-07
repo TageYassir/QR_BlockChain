@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import ImageAnnotator from './ImageAnnotator';
 
 export default function ImageUploader({ value = [], onChange }) {
-  const [editingIndex, setEditingIndex] = useState(-1);
+  // editing/pinning removed per UX request
 
   function handleFiles(e) {
     const files = Array.from(e.target.files || []);
@@ -41,7 +40,6 @@ export default function ImageUploader({ value = [], onChange }) {
           <div key={i} className="relative border rounded overflow-hidden">
             <img src={it.preview || it.url} alt={`photo-${i}`} className="object-cover w-full h-28"/>
             <div className="absolute top-1 right-1 flex space-x-1">
-              <button type="button" onClick={() => setEditingIndex(i)} className="bg-white px-2 py-1 rounded text-xs">Edit</button>
               <button type="button" onClick={() => removeItem(i)} className="bg-white px-2 py-1 rounded text-xs">Remove</button>
             </div>
 
@@ -52,19 +50,7 @@ export default function ImageUploader({ value = [], onChange }) {
         ))}
       </div>
 
-      {/* Editing modal (simple inline) */}
-      {editingIndex >= 0 && (
-        <div className="mt-4 border p-3 rounded bg-white shadow">
-          <div className="flex justify-between items-center mb-2">
-            <h4 className="font-medium">Annotate Image</h4>
-            <button onClick={() => setEditingIndex(-1)} className="text-sm text-slate-500">Close</button>
-          </div>
-          <ImageAnnotator
-            image={value[editingIndex]}
-            onChange={(newData) => { updateItem(editingIndex, newData); }}
-          />
-        </div>
-      )}
+      {/* Image editing/annotating removed */}
     </div>
   );
 }

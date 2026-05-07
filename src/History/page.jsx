@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 
 export default function HistoryPage({ userAddress, onNavigate }) {
   const [claims, setClaims] = useState([]);
+  const [evidences, setEvidences] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [view, setView] = useState('claims'); // 'claims' or 'evidence'
 
   async function downloadQrImage(qrSrc, caseId) {
     try {
@@ -24,12 +26,19 @@ export default function HistoryPage({ userAddress, onNavigate }) {
   }
   useEffect(() => {
     async function load() {
-      if (!userAddress) return setLoading(false);
+      if (!userAddress) {
+        setClaims([]);
+        setEvidences([]);
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setError('');
       const API_BASE = import.meta.env.VITE_API_BASE || '';
       try {
-        const res = await fetch(`${API_BASE}/api/claims?reporter=${encodeURIComponent(userAddress)}`);
+        const res = await fetch(`${API_BASE}/api/claims?reporter=${encodeURIComponent(userAddress)}`, {
+          headers: { 'x-user-address': userAddress.trim() }
+        });
         if (!res.ok) {
           throw new Error(await res.text());
         }
@@ -41,12 +50,25 @@ export default function HistoryPage({ userAddress, onNavigate }) {
           category: c.category || (c.metadata && c.metadata.category) || 'unknown',
           policyId: c.policyId || (c.metadata && c.metadata.policyId) || 'N/A',
           status: c.status || 'pending',
+          acceptorAddress: c.acceptorAddress || (c.metadata && c.metadata.acceptorAddress) || '',
           evidenceCount: Number(c.evidenceCount || (Array.isArray(c.evidences) ? c.evidences.length : 0)),
           date: c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : (c.date || ''),
           qr: c.qr || `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(c.caseId || c.id || '')}`,
           location: c.location || null,
         }));
         setClaims(normalized);
+        // load evidences submitted by this wallet (scoped endpoint)
+        try {
+          const evRes = await fetch(`${API_BASE}/api/evidences`, {
+            headers: { 'x-user-address': userAddress.trim() }
+          });
+          if (evRes.ok) {
+            const evBody = await evRes.json();
+            setEvidences(evBody.evidences || []);
+          }
+        } catch (innerErr) {
+          console.warn('Failed to load evidences for user', innerErr);
+        }
       } catch (err) {
         console.error('History fetch error', err);
         setError(err.message || 'Failed to load claims');
@@ -64,6 +86,45 @@ export default function HistoryPage({ userAddress, onNavigate }) {
   return (
     <div className="w-full max-w-4xl mx-auto">
       <h2 className="text-2xl font-bold text-gray-800 mb-6">Your Submitted Claims</h2>
+      <div className="mb-4 flex items-center justify-end">
+        <div className="text-sm font-mono text-gray-700">Connected wallet: {userAddress}</div>
+      </div>
+      <div className="mb-4 flex gap-2">
+        <button onClick={() => setView('claims')} className={`px-3 py-1 rounded ${view==='claims' ? 'bg-indigo-600 text-white' : 'bg-white border'}`}>Claims</button>
+        <button onClick={() => setView('evidence')} className={`px-3 py-1 rounded ${view==='evidence' ? 'bg-indigo-600 text-white' : 'bg-white border'}`}>Evidence</button>
+      </div>
+      {view === 'evidence' && (
+        <div className="bg-white p-4 rounded-lg shadow-sm mb-6">
+          <h3 className="font-semibold mb-3">Evidence Submitted By You</h3>
+          {evidences.length === 0 ? (
+            <div className="text-sm text-gray-500">No evidence found submitted by your wallet.</div>
+          ) : (
+            <div className="space-y-3">
+              {evidences.map((e) => (
+                <div key={e.evidenceId} className="border p-3 rounded flex items-center justify-between">
+                  <div>
+                    <div className="font-mono text-sm">Evidence ID: {e.evidenceId}</div>
+                    <div className="text-sm text-gray-600">Claim: {e.claimId}</div>
+                    <div className="text-sm text-gray-700">{e.comment}</div>
+                  </div>
+                  <div>
+                    <img src={e.qr || `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(`${window.location.origin}/?evidence=${e.evidenceId}&claim=${e.claimId}`)}`} alt="evidence-qr" className="w-24 h-24" />
+                    <div className="mt-2 text-right">
+                      <button onClick={() => {
+                        const src = e.qr || `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`${window.location.origin}/?evidence=${e.evidenceId}&claim=${e.claimId}`)}`;
+                        fetch(src).then(r => r.blob()).then(blob => {
+                          const href = URL.createObjectURL(blob);
+                          const a = document.createElement('a'); a.href = href; a.download = `evidence-${e.evidenceId}.png`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(href);
+                        });
+                      }} className="rounded bg-indigo-600 px-2 py-1 text-white text-sm">Download QR</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
       {loading ? (
         <div className="text-center text-gray-500">Loading your history...</div>
@@ -81,6 +142,7 @@ export default function HistoryPage({ userAddress, onNavigate }) {
                 <p className="text-sm text-gray-600"><strong>Policy:</strong> {claim.policyId}</p>
                 <p className="text-sm text-gray-600"><strong>Category:</strong> <span className="capitalize">{claim.category}</span></p>
                 <p className="text-sm text-gray-600"><strong>Status:</strong> <span className="capitalize">{claim.status}</span></p>
+                <p className="text-xs text-gray-500 break-all"><strong>Acceptor:</strong> {claim.acceptorAddress || 'N/A'}</p>
                 <p className="text-xs text-gray-500">Evidence Linked: {claim.evidenceCount}</p>
                 {claim.location && (
                   <p className="text-xs text-gray-500 mt-1">Lat: {claim.location.lat}, Long: {claim.location.lng}</p>
@@ -93,13 +155,6 @@ export default function HistoryPage({ userAddress, onNavigate }) {
                     className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
                   >
                     Download QR
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate && onNavigate('evidence-upload', { claimId: claim.id })}
-                    className="rounded-md border border-indigo-600 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
-                  >
-                    Add Evidence
                   </button>
                 </div>
               </div>
