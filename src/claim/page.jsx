@@ -4,19 +4,18 @@ import ImageUploader from '../components/ImageUploader';
 
 const MapDisplay = lazy(() => import('../components/MapDisplay'));
 
-export default function ClaimPage() {
+export default function ClaimPage({ userAddress }) {
   const [category, setCategory] = useState('vehicle');
   const [policyId, setPolicyId] = useState('');
-  const [reporter, setReporter] = useState('');
+  const [reporter, setReporter] = useState(userAddress || '');
   const [comment, setComment] = useState('');
   const [location, setLocation] = useState(null);
-  const [photos, setPhotos] = useState([]); // images + annotations
+  const [photos, setPhotos] = useState([]); // Array of { file, type: 'paper' | 'id', preview, pins }
   const [status, setStatus] = useState('');
   const [qrCode, setQrCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    // attempt to capture location once (user must allow)
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => setLocation([pos.coords.latitude, pos.coords.longitude]),
@@ -26,7 +25,6 @@ export default function ClaimPage() {
     }
   }, []);
 
-  // Compute SHA256/Keccak256 hash of file content
   async function computeFileHash(file) {
     const ab = await file.arrayBuffer();
     return ethers.keccak256(new Uint8Array(ab));
@@ -38,29 +36,26 @@ export default function ClaimPage() {
       alert('Please upload at least one photo');
       return;
     }
-    if (!confirm(`You are about to submit ${photos.length} photo(s). Continue?`)) return;
+    // Confirmation for number of photos as requested
+    if (!window.confirm(`Are you sure? You are submitting exactly ${photos.length} photo(s).`)) return;
 
     setSubmitting(true);
     setStatus('Computing file hashes...');
 
     try {
-      // Compute hashes for all files
       const clientHashes = [];
       for (const p of photos) {
         if (!p.file) continue;
         const hash = await computeFileHash(p.file);
-        clientHashes.push({ filename: p.file.name, hash });
+        clientHashes.push({ filename: p.file.name, hash, type: p.type });
       }
 
-      // Build evidence hash: concat(file_hashes) + metadata
       const concat = ethers.concat(clientHashes.map(c => c.hash));
       const metaObj = { policyId, reporter, location, category, comment };
       const metaBytes = ethers.toUtf8Bytes(JSON.stringify(metaObj));
       const evidenceHash = ethers.keccak256(ethers.concat([concat, metaBytes]));
 
       setStatus('Preparing upload...');
-
-      // Prepare form data with files and metadata
       const fd = new FormData();
       fd.append('category', category);
       fd.append('policyId', policyId);
@@ -96,94 +91,103 @@ export default function ClaimPage() {
         const errorText = await res.text();
         setStatus('Upload failed: ' + errorText);
         setQrCode('');
-        alert('Failed to submit claim: ' + errorText);
       }
     } catch (err) {
       console.error(err);
       setStatus('Error: ' + err.message);
       setQrCode('');
-      alert('Error: ' + err.message);
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="p-4 max-w-3xl mx-auto">
-      <h2 className="text-xl font-semibold mb-3">Submit Incident Report</h2>
+    <div className="w-full max-w-3xl bg-white p-6 md:p-8 rounded-2xl shadow-lg">
+      <h2 className="text-2xl font-bold text-gray-800 mb-6 border-b pb-3">Submit Incident Report</h2>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium">Category</label>
-          <select value={category} onChange={(e) => setCategory(e.target.value)}
-                  className="mt-1 block w-full border rounded px-3 py-2">
-            <option value="vehicle">Vehicle</option>
-            <option value="product">Product</option>
-            <option value="person">Person/ID</option>
-            <option value="other">Other</option>
-          </select>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">Claim Category</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none">
+              <option value="vehicle">Vehicle Accident</option>
+              <option value="product">Product Issue</option>
+              <option value="person">Person / Injury</option>
+              <option value="machine">Machinery</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">Policy / Case ID</label>
+            <input value={policyId} onChange={(e) => setPolicyId(e.target.value)}
+                   className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="e.g. POL-1234"/>
+          </div>
         </div>
 
         <div>
-          <label className="block text-sm font-medium">Policy / Case ID (optional)</label>
-          <input value={policyId} onChange={(e) => setPolicyId(e.target.value)}
-                 className="mt-1 block w-full border rounded px-3 py-2" placeholder="Policy or reference id"/>
+          <label className="block text-sm font-semibold text-gray-700 mb-1">Evidence Photos (Papers & IDs)</label>
+          <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-4">
+             {/* Note: Assuming ImageUploader is adapted or standard for this */}
+             <ImageUploader value={photos} onChange={setPhotos} />
+             <p className="text-xs text-gray-500 mt-2 text-center">
+               Upload images of written paper reports and machine/vehicle IDs. Previews will display above.
+             </p>
+          </div>
         </div>
 
         <div>
-          <label className="block text-sm font-medium">Reporter Address (optional)</label>
-          <input value={reporter} onChange={(e) => setReporter(e.target.value)}
-                 className="mt-1 block w-full border rounded px-3 py-2" placeholder="Blockchain address or identifier"/>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Photos (IDs, handwritten notes, scene)</label>
-          <ImageUploader value={photos} onChange={setPhotos} />
-          <p className="text-xs text-slate-500 mt-1">Upload multiple images. You can preview and add pins to each image.</p>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium">Location</label>
-          <div className="mt-2 border rounded p-2 bg-slate-50">
+          <label className="block text-sm font-semibold text-gray-700 mb-1">Captured Location</label>
+          <div className="border border-gray-200 rounded-lg p-3 bg-gray-50 relative overflow-hidden">
             {location ? (
-              <div>
-                <p className="text-sm text-slate-700 mb-2">Captured coordinates: {location[0].toFixed(6)}, {location[1].toFixed(6)}</p>
-                <div className="h-48">
+              <div className="flex flex-col space-y-2">
+                <span className="text-xs font-mono bg-blue-100 text-blue-800 self-start px-2 py-1 rounded">
+                  LAT: {location[0].toFixed(5)}, LNG: {location[1].toFixed(5)}
+                </span>
+                <div className="h-48 rounded-lg overflow-hidden border border-gray-200 z-0">
                   <Suspense fallback={<div className="text-center text-slate-500 py-8">Loading map...</div>}>
-                    <MapDisplay position={location} locked />
+                    <MapDisplay position={location} locked={true} />
                   </Suspense>
                 </div>
+                <div className="absolute inset-0 z-10 bg-transparent"></div> {/* Forces map to be read-only on click */}
               </div>
             ) : (
-              <p className="text-sm text-slate-500">Location not available — ask user to enable location in their browser.</p>
+              <p className="text-sm text-gray-500 py-4 text-center flex items-center justify-center">
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                Location access is required. Please enable it in your browser.
+              </p>
             )}
           </div>
         </div>
 
         <div>
-          <label className="block text-sm font-medium">Comment (small note)</label>
+          <label className="block text-sm font-semibold text-gray-700 mb-1">Comment / Notes</label>
           <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3}
-                    className="mt-1 block w-full border rounded px-3 py-2" placeholder="Add a short note..."/>
+                    className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none resize-none" placeholder="Add a short explanatory note here..."/>
         </div>
 
-        <div className="flex items-center justify-between">
-          <button type="submit" disabled={submitting} className="px-4 py-2 bg-indigo-600 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed">
-            {submitting ? 'Submitting...' : 'Upload & Submit'}
+        <div className="pt-4 border-t flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="text-sm text-gray-600 font-medium">
+            Total Uploads: <span className="bg-indigo-100 text-indigo-800 px-2 py-1 rounded-full">{photos.length}</span>
+          </div>
+          <button type="submit" disabled={submitting} className="w-full sm:w-auto px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            {submitting ? 'Submitting to Blockchain...' : 'Upload & Submit'}
           </button>
-          <div className="text-sm text-slate-500">Photos: <strong>{photos.length}</strong></div>
         </div>
       </form>
       
       {status && (
-        <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
-          <strong>Status:</strong> {status}
+        <div className="mt-6 p-4 bg-blue-50 border-l-4 border-blue-500 rounded text-sm text-blue-800 font-medium">
+          {status}
         </div>
       )}
 
       {qrCode && (
-        <div className="mt-4 p-4 bg-white border rounded-lg shadow-sm">
-          <div className="text-sm font-medium mb-2">Submitted QR</div>
-          <img src={qrCode} alt="Claim QR code" className="w-48 h-48 object-contain" />
+        <div className="mt-6 p-6 bg-gray-50 border border-gray-200 rounded-xl shadow-inner text-center">
+          <div className="text-lg font-bold text-gray-800 mb-4">Your Case QR Code</div>
+          <img src={qrCode} alt="Claim QR code" className="w-48 h-48 mx-auto object-contain border border-gray-300 bg-white p-2 rounded-lg shadow-sm" />
+          <p className="text-xs text-gray-500 mt-4">Save this QR code to track your case on the blockchain.</p>
         </div>
       )}
     </div>
