@@ -7,6 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const QRCode = require('qrcode');
 const { session } = require('./neo4j');
 const { ensureStorage } = require('./utils/files');
+const { submitClaimOnChain, addEvidenceOnChain, policyInfo, registerPolicyOnChain } = require('./contractClient');
 
 const app = express();
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -142,6 +143,18 @@ app.post('/api/claims', upload.array('photos', 20), async (req, res) => {
          RETURN c`, { caseId, qrData, qr }
       ));
 
+      // attempt to publish minimal claim info on-chain
+      try {
+        const chainResp = await submitClaimOnChain({ caseId, policyId, evidenceHash, ipfsCid: '', acceptor: normalizeAddress(acceptorAddress) });
+        console.log('Submitted claim on-chain:', chainResp);
+        // optionally store tx hash in Neo4j
+        await s.writeTransaction(tx => tx.run(
+          `MATCH (c:Case {caseId: $caseId}) SET c.txHash = $txHash RETURN c`, { caseId, txHash: chainResp.txHash }
+        ));
+      } catch (chainErr) {
+        console.warn('Failed to publish claim on-chain:', chainErr && chainErr.message ? chainErr.message : chainErr);
+      }
+
       return res.json({ ok: true, caseId, policyId, qr, qrData });
     } finally { await s.close(); }
   } catch (err) {
@@ -218,6 +231,15 @@ app.post('/api/claims/:id/evidence', upload.array('photos', 20), async (req, res
         ));
       } catch (qrErr) {
         console.warn('Failed to generate evidence QR:', qrErr && qrErr.message ? qrErr.message : qrErr);
+      }
+
+      // attempt to publish evidence on-chain
+      try {
+        const chainResp = await addEvidenceOnChain({ caseId: claimId, evidenceId, evidenceHash: req.body.evidenceHash || '', ipfsCid: '', linkedEvidenceId });
+        console.log('Submitted evidence on-chain:', chainResp);
+        await s.writeTransaction(tx => tx.run(`MATCH (e:Evidence {evidenceId: $evidenceId}) SET e.txHash = $txHash RETURN e`, { evidenceId, txHash: chainResp.txHash }));
+      } catch (chainErr) {
+        console.warn('Failed to publish evidence on-chain:', chainErr && chainErr.message ? chainErr.message : chainErr);
       }
 
       return res.json({ ok: true, claimId, evidenceId, status: 'accepted' });
@@ -354,5 +376,50 @@ app.get('/api/ledger', async (req, res) => {
 
 // Serve storage folder static
 app.use('/storage', express.static(storageDir));
+
+// Expose current contract address for frontend/runtime discovery
+app.get('/api/contract-address', (req, res) => {
+  // priority: env var, then deployments.json
+  const fromEnv = process.env.CONTRACT_ADDRESS;
+  if (fromEnv && String(fromEnv).trim()) return res.json({ ok: true, address: String(fromEnv).trim() });
+  try {
+    const p = path.join(__dirname, '..', 'deployments.json');
+    if (fs.existsSync(p)) {
+      const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (data && data.ClaimRegistry) return res.json({ ok: true, address: data.ClaimRegistry });
+    }
+  } catch (e) {
+    console.warn('Failed to read deployments.json', e && e.message ? e.message : e);
+  }
+  return res.status(404).json({ ok: false, error: 'Contract address not available' });
+});
+
+// Query on-chain policy info by policyId (string)
+app.get('/api/policies/:policyId', async (req, res) => {
+  const policyId = req.params.policyId;
+  if (!policyId) return res.status(400).json({ ok: false, error: 'policyId required' });
+  try {
+    const info = await policyInfo(policyId);
+    return res.json({ ok: true, policy: info });
+  } catch (err) {
+    console.error('Error fetching policy info:', err && err.message ? err.message : err);
+    return res.status(500).json({ ok: false, error: 'Failed to read policy info' });
+  }
+});
+
+// Register a policy on-chain via relayer/private key. Requires x-user-address header as caller identity.
+app.post('/api/policies', express.json(), async (req, res) => {
+  const caller = req.get('x-user-address') || '';
+  if (!normalizeAddress(caller)) return res.status(401).json({ ok: false, error: 'Wallet connection required' });
+  const { policyId, owner, metadataHash } = req.body || {};
+  if (!policyId || !owner) return res.status(400).json({ ok: false, error: 'policyId and owner are required' });
+  try {
+    const result = await registerPolicyOnChain({ policyId, owner: normalizeAddress(owner), metadataHash: metadataHash || undefined });
+    return res.json({ ok: true, result });
+  } catch (err) {
+    console.error('Failed to register policy on-chain:', err && err.message ? err.message : err);
+    return res.status(500).json({ ok: false, error: err && err.message ? err.message : String(err) });
+  }
+});
 
 app.listen(process.env.PORT || 4001, () => console.log(`Server started on port ${process.env.PORT || 4001}`));
