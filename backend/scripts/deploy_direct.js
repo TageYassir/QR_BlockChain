@@ -45,6 +45,14 @@ async function main() {
   }
 
   console.log('ClaimRegistry deployed to:', receipt.contractAddress);
+  // persist latest deployment address for runtime lookup by backend/frontend
+  try {
+    const outPath = path.resolve(__dirname, '../deployments.json');
+    fs.writeFileSync(outPath, JSON.stringify({ ClaimRegistry: receipt.contractAddress, deployedAt: new Date().toISOString() }, null, 2));
+    console.log('Wrote deployment info to', outPath);
+  } catch (e) {
+    console.warn('Failed to write deployments.json:', e && e.message ? e.message : e);
+  }
 }
 
 main().catch((err) => {

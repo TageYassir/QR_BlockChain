@@ -26,7 +26,7 @@ export default function HistoryPage({ userAddress, onNavigate }) {
   }
   useEffect(() => {
     async function load() {
-      if (!userAddress) {
+      if (!userAddress || !String(userAddress).trim()) {
         setClaims([]);
         setEvidences([]);
         setLoading(false);
@@ -36,8 +36,9 @@ export default function HistoryPage({ userAddress, onNavigate }) {
       setError('');
       const API_BASE = import.meta.env.VITE_API_BASE || '';
       try {
-        const res = await fetch(`${API_BASE}/api/claims?reporter=${encodeURIComponent(userAddress)}`, {
-          headers: { 'x-user-address': userAddress.trim() }
+        const addr = String(userAddress || '').trim().toLowerCase();
+        const res = await fetch(`${API_BASE}/api/claims`, {
+          headers: { 'x-user-address': addr }
         });
         if (!res.ok) {
           throw new Error(await res.text());
@@ -55,12 +56,15 @@ export default function HistoryPage({ userAddress, onNavigate }) {
           date: c.createdAt ? new Date(c.createdAt).toISOString().slice(0, 10) : (c.date || ''),
           qr: c.qr || `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(c.caseId || c.id || '')}`,
           location: c.location || null,
+          reporter: c.reporter || (c.metadata && c.metadata.reporter) || ''
         }));
-        setClaims(normalized);
+        // additionally ensure client-side that only claims from the connected wallet are shown
+        const filtered = normalized.filter((c) => String(c.reporter || '').toLowerCase() === addr);
+        setClaims(filtered);
         // load evidences submitted by this wallet (scoped endpoint)
         try {
           const evRes = await fetch(`${API_BASE}/api/evidences`, {
-            headers: { 'x-user-address': userAddress.trim() }
+            headers: { 'x-user-address': String(userAddress || '').trim().toLowerCase() }
           });
           if (evRes.ok) {
             const evBody = await evRes.json();

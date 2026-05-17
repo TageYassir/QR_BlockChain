@@ -2,7 +2,23 @@ import { ethers } from "ethers";
 import ClaimRegistryArtifact from "../abi/ClaimRegistry.json";
 
 const RPC_URL = import.meta.env.VITE_RPC_URL || "http://127.0.0.1:8545";
-const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS;
+let CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || null;
+
+async function fetchRuntimeContractAddress() {
+  if (CONTRACT_ADDRESS) return CONTRACT_ADDRESS;
+  try {
+    const resp = await fetch('/api/contract-address');
+    if (!resp.ok) return null;
+    const j = await resp.json();
+    if (j && j.ok && j.address) {
+      CONTRACT_ADDRESS = j.address;
+      return CONTRACT_ADDRESS;
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+}
 
 export function getRpcProvider() {
   // Support ethers v6 (top-level JsonRpcProvider) and ethers v5 (ethers.providers.JsonRpcProvider)
@@ -57,17 +73,18 @@ export async function getSigner() {
 
 // Return contract instance using signer if wantWrite=true, otherwise a read-only contract via RPC
 export async function getContract({ wantWrite = true } = {}) {
-  if (!CONTRACT_ADDRESS) throw new Error("VITE_CONTRACT_ADDRESS not set");
+  const addr = await fetchRuntimeContractAddress();
+  if (!addr) throw new Error("Contract address not available (set VITE_CONTRACT_ADDRESS or run deploy)");
 
   if (wantWrite) {
     const signer = await getSigner();
     if (signer) {
-      return new ethers.Contract(CONTRACT_ADDRESS, ClaimRegistryArtifact.abi, signer);
+      return new ethers.Contract(addr, ClaimRegistryArtifact.abi, signer);
     }
     // fallback to RPC read-only contract if no signer
   }
   const rpcProvider = getRpcProvider();
-  return new ethers.Contract(CONTRACT_ADDRESS, ClaimRegistryArtifact.abi, rpcProvider);
+  return new ethers.Contract(addr, ClaimRegistryArtifact.abi, rpcProvider);
 }
 
 // Helpers for UI / debugging

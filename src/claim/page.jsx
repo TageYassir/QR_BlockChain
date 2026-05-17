@@ -1,5 +1,6 @@
 import { useState, useEffect, Suspense, lazy } from 'react';
 import { ethers } from 'ethers';
+import { getContract } from '../eth/contract';
 import ImageUploader from '../components/ImageUploader';
 
 const MapDisplay = lazy(() => import('../components/MapDisplay'));
@@ -108,6 +109,26 @@ export default function ClaimPage({ userAddress, onNavigate }) {
         const body = await res.json();
         const caseId = body.caseId || (body.claim && body.claim.caseId) || `C-${Math.floor(Math.random()*10000)}`;
         setStatus(`Success! Case ID: ${caseId}`);
+        // Attempt to publish on-chain via user's MetaMask signer
+        try {
+          const contract = await getContract({ wantWrite: true });
+          if (contract) {
+            setStatus('Submitting on-chain via MetaMask...');
+            const tx = await contract.submitClaim(caseId, policyId, evidenceHash, '', acceptorAddress.trim());
+            const receipt = await tx.wait();
+            console.log('Claim tx receipt', receipt);
+            setStatus(`Claim published on-chain: ${receipt.transactionHash}`);
+            // optionally notify backend of txHash
+            try {
+              const API_BASE2 = import.meta.env.VITE_API_BASE || '';
+              await fetch(`${API_BASE2}/api/claims/${encodeURIComponent(caseId)}/tx`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ txHash: receipt.transactionHash }) });
+            } catch (e) {
+              // ignore
+            }
+          }
+        } catch (err) {
+          console.warn('MetaMask publish failed', err);
+        }
         // server returns qr as data URL; if not, generate one that links to evidence view
         const qr = body.qr || `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`${window.location.origin}/?evidence=${caseId}`)}`;
         setQrCode(qr);

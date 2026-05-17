@@ -6,7 +6,6 @@ import HistoryPage from './History/page.jsx';
 import GlobalClaimsPage from './GlobalClaims/page.jsx';
 import EvidencePage from './Evidence/page.jsx';
 import EvidenceUploadPage from './EvidenceUpload/page.jsx';
-import TestClaimRegistry from './components/TestClaimRegistry.jsx';
 
 export default function App() {
   const initialEvidenceId = new URLSearchParams(window.location.search).get('evidence');
@@ -56,7 +55,7 @@ export default function App() {
               <button onClick={() => navigate('evidence-upload')} className="hover:text-indigo-200">Add Evidence</button>
             </>
           )}
-          <button onClick={() => navigate('test')} className="hover:text-indigo-200">Test Registry</button>
+          
           <button onClick={() => navigate('global')} className="hover:text-indigo-200">Global Ledger</button>
           {!userAddress ? (
             <button onClick={() => navigate('login')} className="hover:text-indigo-200">Login</button>
@@ -86,7 +85,7 @@ export default function App() {
               </>
             )}
             <button onClick={() => navigate('global')} className="block w-full text-left px-3 py-2 rounded hover:bg-indigo-600">Global Ledger</button>
-            <button onClick={() => navigate('test')} className="block w-full text-left px-3 py-2 rounded hover:bg-indigo-600">Test Registry</button>
+            
             {!userAddress ? (
               <button onClick={() => navigate('login')} className="block w-full text-left px-3 py-2 rounded hover:bg-indigo-600">Login</button>
             ) : (
@@ -104,7 +103,7 @@ export default function App() {
         {currentPage === 'global' && <GlobalClaimsPage onNavigate={navigate} userAddress={userAddress} />}
         {currentPage === 'evidence' && <EvidencePage claimId={currentClaimId} />}
         {currentPage === 'evidence-upload' && <EvidenceUploadPage onNavigate={navigate} userAddress={userAddress} claimId={currentClaimId} />}
-        {currentPage === 'test' && <TestClaimRegistry />}
+        
       </main>
       
       <footer className="bg-gray-200 text-center p-4 text-xs text-gray-500 mt-auto">
