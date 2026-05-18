@@ -361,6 +361,87 @@ app.get('/api/evidences', async (req, res) => {
   }
 });
 
+// Public: list all evidences across claims (for global evidence history)
+app.get('/api/evidences/global', async (req, res) => {
+  try {
+    const s = session();
+    try {
+      const result = await s.readTransaction(tx => tx.run(
+        `MATCH (c:Case)-[:HAS_EVIDENCE]->(e:Evidence)
+         RETURN c.caseId AS caseId,
+                e.evidenceId AS evidenceId,
+                e.comment AS comment,
+                e.photos AS photos,
+                e.lat AS lat,
+                e.lng AS lng,
+                e.linkedEvidenceId AS linkedEvidenceId,
+                e.qr AS qr,
+                e.qrData AS qrData,
+                coalesce(e.txHash, '') AS txHash,
+                toString(e.createdAt) AS createdAt
+         ORDER BY e.createdAt DESC`
+      ));
+
+      const evidences = result.records.map(r => ({
+        evidenceId: r.get('evidenceId'),
+        claimId: r.get('caseId'),
+        comment: r.get('comment') || '',
+        photos: r.get('photos') || [],
+        lat: r.get('lat') || null,
+        lng: r.get('lng') || null,
+        linkedEvidenceId: r.get('linkedEvidenceId') || '',
+        qr: r.get('qr') || '',
+        qrData: r.get('qrData') || '',
+        txHash: r.get('txHash') || '',
+        createdAt: r.get('createdAt') || ''
+      }));
+
+      return res.json({ ok: true, evidences });
+    } finally { await s.close(); }
+  } catch (err) {
+    console.error('Neo4j error when listing global evidences:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
+  }
+});
+
+// Public: list all claims with their evidences (for global UI fallback)
+app.get('/api/claims/global', async (req, res) => {
+  try {
+    const s = session();
+    try {
+      const result = await s.readTransaction(tx => tx.run(
+        `MATCH (c:Case)
+         OPTIONAL MATCH (c)-[:HAS_PHOTO]->(p:Photo)
+         OPTIONAL MATCH (c)-[:HAS_EVIDENCE]->(e:Evidence)
+         WITH c, collect(DISTINCT p.url) AS photos, collect(DISTINCT e { .evidenceId, .submittedBy, .comment, .status, .photos, .lat, .lng, .linkedEvidenceId, .qrData, .qr, createdAt: toString(e.createdAt), txHash: coalesce(e.txHash, '') }) AS evidences
+         RETURN c.caseId AS caseId, c.policyId AS policyId, c.category AS category, c.status AS status, c.comment AS comment, c.reporter AS reporter, c.acceptorAddress AS acceptorAddress, c.evidenceHash AS evidenceHash, c.qrData AS qrData, c.qr AS qr, c.metadata AS metadata, photos AS photos, evidences AS evidences, c.createdAt AS createdAt ORDER BY c.createdAt DESC`
+      ));
+
+      const claims = result.records.map(r => ({
+        caseId: r.get('caseId'),
+        policyId: r.get('policyId') || '',
+        category: r.get('category') || '',
+        status: r.get('status') || '',
+        comment: r.get('comment') || '',
+        reporter: r.get('reporter') || '',
+        acceptorAddress: r.get('acceptorAddress') || '',
+        evidenceHash: r.get('evidenceHash') || '',
+        qrData: r.get('qrData') || '',
+        qr: r.get('qr') || '',
+        metadata: r.get('metadata') || {},
+        photos: r.get('photos') || [],
+        evidences: r.get('evidences') || [],
+        createdAt: r.get('createdAt') || ''
+      }));
+
+      return res.json({ ok: true, claims });
+    } finally { await s.close(); }
+  } catch (err) {
+    console.error('Neo4j error when listing global claims:', err && err.message ? err.message : err);
+    return res.status(503).json({ ok: false, error: 'Database unavailable — please connect to Neo4j' });
+  }
+});
+
 // Global ledger
 app.get('/api/ledger', async (req, res) => {
   try {
@@ -370,10 +451,23 @@ app.get('/api/ledger', async (req, res) => {
         `MATCH (c:Case)
          OPTIONAL MATCH (c)-[:HAS_PHOTO]->(p:Photo)
          WITH c, collect(DISTINCT p.url) AS photos
-         RETURN c.caseId AS caseId, c.policyId AS policyId, c.evidenceHash AS txHash, c.createdAt AS createdAt, photos AS photos ORDER BY createdAt DESC`
+         RETURN c.caseId AS id, c.caseId AS caseId, 'claim' AS type, coalesce(c.txHash, '') AS txHash, c.policyId AS policyId, c.createdAt AS createdAt, photos AS photos
+         UNION
+         MATCH (c:Case)-[:HAS_EVIDENCE]->(e:Evidence)
+         RETURN e.evidenceId AS id, c.caseId AS caseId, 'evidence' AS type, coalesce(e.txHash, '') AS txHash, '' AS policyId, e.createdAt AS createdAt, e.photos AS photos
+         ORDER BY createdAt DESC`
       ));
 
-      const ledger = result.records.map((record) => ({ txHash: record.get('txHash') || record.get('caseId'), caseId: record.get('caseId'), timestamp: record.get('createdAt') && typeof record.get('createdAt').toString === 'function' ? record.get('createdAt').toString() : record.get('createdAt') || '', policyId: record.get('policyId') || '', photos: record.get('photos') || [] }));
+      const ledger = result.records.map((record) => ({
+        id: record.get('id'),
+        type: record.get('type') || 'claim',
+        txHash: record.get('txHash') || record.get('caseId'),
+        caseId: record.get('caseId'),
+        policyId: record.get('policyId') || '',
+        timestamp: record.get('createdAt') && typeof record.get('createdAt').toString === 'function' ? record.get('createdAt').toString() : record.get('createdAt') || '',
+        photos: record.get('photos') || []
+      }));
+
       return res.json({ ok: true, ledger });
     } finally { await s.close(); }
   } catch (err) {
@@ -416,6 +510,23 @@ app.post('/api/claims/:id/tx', express.json(), async (req, res) => {
   } catch (err) {
     console.error('Failed to store txHash', err && err.message ? err.message : err);
     return res.status(500).json({ ok: false, error: 'Failed to store txHash' });
+  }
+});
+
+// Record txHash for an evidence (helper for frontend to notify backend after MetaMask tx)
+app.post('/api/evidences/:id/tx', express.json(), async (req, res) => {
+  const id = req.params.id;
+  const { txHash } = req.body || {};
+  if (!txHash) return res.status(400).json({ ok: false, error: 'txHash required' });
+  try {
+    const s = session();
+    try {
+      await s.writeTransaction(tx => tx.run(`MATCH (e:Evidence {evidenceId: $id}) SET e.txHash = $txHash RETURN e`, { id, txHash }));
+      return res.json({ ok: true });
+    } finally { await s.close(); }
+  } catch (err) {
+    console.error('Failed to store evidence txHash', err && err.message ? err.message : err);
+    return res.status(500).json({ ok: false, error: 'Failed to store evidence txHash' });
   }
 });
 

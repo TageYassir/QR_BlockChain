@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import ImageUploader from '../components/ImageUploader';
+import { getContract } from '../eth/contract';
+import { ethers } from 'ethers';
 
 export default function EvidenceUploadPage({ onNavigate, userAddress, claimId }) {
   const [targetClaimId, setTargetClaimId] = useState(claimId || '');
@@ -14,7 +16,7 @@ export default function EvidenceUploadPage({ onNavigate, userAddress, claimId })
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const apiBase = import.meta.env.VITE_API_BASE || '';
+  const apiBase = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:4000';
 
   const captureLocation = () => {
     setError('');
@@ -116,6 +118,38 @@ export default function EvidenceUploadPage({ onNavigate, userAddress, claimId })
 
       if (onNavigate) {
         onNavigate('evidence', { claimId: body.claimId || targetClaimId.trim() });
+      }
+      // If the connected wallet is the configured acceptor for the claim, attempt to publish evidence on-chain via MetaMask
+      try {
+        const claimResp = await fetch(`${apiBase}/api/claims/${encodeURIComponent(body.claimId)}`);
+        if (claimResp.ok) {
+          const claimBody = await claimResp.json();
+          if (claimBody && claimBody.ok && claimBody.claim) {
+            const acceptor = String(claimBody.claim.acceptorAddress || '').trim().toLowerCase();
+            if (acceptor && acceptor === String(userAddress || '').trim().toLowerCase()) {
+              setStatus('Publishing evidence on-chain (MetaMask)...');
+              try {
+                const contract = await getContract({ wantWrite: true });
+                const evidenceHash = ethers.id('');
+                const tx = await contract.addEvidence(targetClaimId.trim(), body.evidenceId, evidenceHash, '', linkedEvidenceId || '');
+                const receipt = await tx.wait();
+                // notify backend of tx hash so it can be stored in Neo4j
+                await fetch(`${apiBase}/api/evidences/${encodeURIComponent(body.evidenceId)}/tx`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ txHash: receipt.transactionHash })
+                });
+                setStatus('Evidence published on-chain');
+              } catch (onChainErr) {
+                console.warn('On-chain publish failed', onChainErr);
+                setError('On-chain publish failed: ' + (onChainErr && onChainErr.message ? onChainErr.message : String(onChainErr)));
+                setStatus('');
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch claim for on-chain check', e);
       }
     } catch (err) {
       console.error('Evidence upload error', err);

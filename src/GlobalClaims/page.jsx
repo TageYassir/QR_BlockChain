@@ -12,7 +12,7 @@ export default function GlobalClaimsPage({ onNavigate, userAddress }) {
       setLoading(true);
       setError('');
       try {
-        const API_BASE = import.meta.env.VITE_API_BASE || '';
+        const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:4000';
         const res = await fetch(`${API_BASE}/api/ledger`);
         if (!res.ok) {
           throw new Error(await res.text());
@@ -22,24 +22,65 @@ export default function GlobalClaimsPage({ onNavigate, userAddress }) {
         if (!body.ok) throw new Error(body.error || 'Failed to load ledger');
 
         const ledger = (body.ledger || []).map((row) => ({
+          id: row.id || (row.caseId + '-' + (row.txHash || '')),
+          type: row.type || 'claim',
           txHash: row.txHash || row.caseId,
           caseId: row.caseId,
-          timestamp: row.timestamp ? new Date(row.timestamp).toLocaleString() : '',
+          timestamp: row.timestamp || ''
         }));
-        setTransactions(ledger);
-        // also fetch claims to extract evidences for global evidence history
+
+        // Also fetch all evidences (public) and merge into ledger view so global ledger shows evidence entries too
+        let evidenceTxs = [];
         try {
-          const allRes = await fetch(`${API_BASE}/api/claims`);
-          if (allRes.ok) {
-            const allBody = await allRes.json();
-            const allClaims = allBody.claims || [];
-            const evList = [];
-            allClaims.forEach((c) => {
-              (c.evidences || []).forEach((e) => {
-                evList.push({ ...e, claimId: c.caseId, policyId: c.policyId || '' });
-              });
-            });
-            setEvidenceHistory(evList.reverse());
+          const evRes = await fetch(`${API_BASE}/api/evidences/global`);
+          if (evRes.ok) {
+            const evBody = await evRes.json();
+            const evList = (evBody.evidences || []).map((e) => ({
+              id: e.evidenceId,
+              type: 'evidence',
+              txHash: e.txHash || e.evidenceId,
+              caseId: e.claimId || '',
+              timestamp: e.createdAt || ''
+            }));
+            evidenceTxs = evList;
+          }
+        } catch (e) { console.warn('Failed to load evidences for ledger merge', e); }
+
+        const merged = ledger.concat(evidenceTxs);
+        // sort by timestamp desc (robust to different formats)
+        merged.sort((a, b) => {
+          const ta = Date.parse(a.timestamp || '') || 0;
+          const tb = Date.parse(b.timestamp || '') || 0;
+          return tb - ta;
+        });
+
+        // format for display
+        const display = merged.map((row) => ({ txHash: row.txHash, caseId: row.caseId, timestamp: row.timestamp ? new Date(row.timestamp).toLocaleString() : '', type: row.type }));
+        setTransactions(display);
+        // fetch global evidence history (public)
+        try {
+          const evRes = await fetch(`${API_BASE}/api/evidences/global`);
+          if (evRes.ok) {
+            const evBody = await evRes.json();
+            let evList = (evBody.evidences || []).map((e) => ({ ...e }));
+            // fallback: if no evidences returned, try claims/global which may contain evidence nodes
+            if ((!evList || evList.length === 0)) {
+              try {
+                const cg = await fetch(`${API_BASE}/api/claims/global`);
+                if (cg.ok) {
+                  const cgBody = await cg.json();
+                  const claims = cgBody.claims || [];
+                  const fallback = [];
+                  claims.forEach(c => {
+                    (c.evidences || []).forEach(e => {
+                      fallback.push({ ...e, claimId: c.caseId, policyId: c.policyId || '' });
+                    });
+                  });
+                  evList = fallback;
+                }
+              } catch (e) { console.warn('claims/global fallback failed', e); }
+            }
+            setEvidenceHistory(evList);
           }
         } catch (e) {
           console.warn('Failed to load evidence history', e);

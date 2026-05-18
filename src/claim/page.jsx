@@ -96,7 +96,7 @@ export default function ClaimPage({ userAddress, onNavigate }) {
       });
 
       // Try to POST to backend API
-      const API_BASE = import.meta.env.VITE_API_BASE || '';
+      const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:4000';
       try {
         setStatus('Uploading to backend...');
         const headers = {};
@@ -120,7 +120,7 @@ export default function ClaimPage({ userAddress, onNavigate }) {
             setStatus(`Claim published on-chain: ${receipt.transactionHash}`);
             // optionally notify backend of txHash
             try {
-              const API_BASE2 = import.meta.env.VITE_API_BASE || '';
+              const API_BASE2 = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:4000';
               await fetch(`${API_BASE2}/api/claims/${encodeURIComponent(caseId)}/tx`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ txHash: receipt.transactionHash }) });
             } catch (e) {
               // ignore
