@@ -8,14 +8,13 @@
 
 # QR_BlockChain (ChainClaim)
 
-A QR-code + blockchain backed system for **tamper-evident incident/claim tracking**. The project generates QR codes that reference immutable records (claims + evidence) so anyone can verify integrity and provenance by scanning a QR and checking the on-chain / ledger state.
+A QR-code + blockchain backed system for **tamper-evident incident/claim tracking**. The project generates QR codes that reference immutable records (claims + evidence) so anyone can verify integrity [...]
 
 > This README is written and maintained by the project owner (single contributor listed above).
 
 ## Table of contents
 - [Project overview](#project-overview)
 - [Features](#features)
-- [Screenshots](#screenshots)
 - [Tech stack](#tech-stack)
 - [Architecture](#architecture)
 - [Getting started (quick)](#getting-started-quick)
@@ -35,7 +34,7 @@ QR_BlockChain provides a minimal, auditable pipeline to create (mint) and verify
 - **Supply-chain / incident reporting** (claims + evidence) with verifiable QR references
 
 Core idea
-- **Mint / Create record:** compute a content hash (and optional metadata), store the hash + issuer on-chain (or emit an event), and generate a QR payload that encodes a verifiable reference (id, tx hash, signature).
+- **Mint / Create record:** compute a content hash (and optional metadata), store the hash + issuer on-chain (or emit an event), and generate a QR payload that encodes a verifiable reference (id, tx h[...]
 - **Verify:** scan the QR, extract the reference, recompute/validate the hash or signature, and query the blockchain to confirm the record.
 
 ## Features
@@ -45,19 +44,6 @@ Core idea
 - Example web UI (React) and CLI tooling (Node.js/TypeScript) for minting and verifying.
 - IPFS integration pattern for storing richer metadata while committing only the content hash on-chain.
 - **Claim workflow UI** for creating claims, uploading evidence, and viewing a global ledger of records.
-
-## Screenshots
-The following screenshots show the ChainClaim interface (web UI) and the associated data/ledger views.
-
-| Screen | Preview |
-| --- | --- |
-| Welcome / Home + wallet connection (MetaMask) | ![Welcome screen](image7) |
-| Submit incident report (new claim) | ![Submit Incident Report](image6) |
-| Evidence viewer (accepted example) | ![Evidence Viewer (Accepted)](image4) |
-| Evidence viewer (pending example) | ![Evidence Viewer (Pending)](image3) |
-| Your submitted claims & evidence history | ![My History](image2) |
-| Global claims ledger | ![Global Ledger](image1) |
-| Backend graph DB view (Neo4j) | ![Neo4j view](image5) |
 
 ## Tech stack
 - Frontend: React (Vite) — verifier / claim UI (PWA-ready)
